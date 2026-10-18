@@ -1,0 +1,6 @@
+# Use opencv-python (GUI build). Do NOT install opencv-python-headless alongside it:
+# both ship the same cv2 module and the headless one breaks cv2.imshow.
+opencv-python>=4.8,<5
+numpy>=1.24
+psutil>=5.9
+pytest>=8.0
