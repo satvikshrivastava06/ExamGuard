@@ -6,8 +6,6 @@ Guarantees:
   3. At most one live monitor exists per session ID.
   4. Status is readable from another thread (e.g. an API handler) without tearing.
 
-Not covered here: whether the session exists / is ACTIVE / belongs to this candidate. That is the
-backend's decision (Team 1). Plug it in through the `validator` argument of MonitoringRegistry.
 """
 from __future__ import annotations
 

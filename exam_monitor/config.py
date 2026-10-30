@@ -34,7 +34,12 @@ class Config:
     hold_multiple_faces_s: float = 1.5
     hold_detection_failure_s: float = 1.0
     hold_camera_unavailable_s: float = 2.0
+    hold_camera_permission_denied_s: float = 0.5   # an OS-level block is not flaky, so confirm quickly
     stall_s: float = 2.0               # gap between observations that counts as an interruption
+
+    # --- Camera diagnosis ---
+    black_frame_luma: float = 3.0          # preflight: all frames below this mean grey level = black feed
+    camera_diag_interval_s: float = 2.0    # how often the worker re-reads OS permission state while the camera is down
 
     # --- Camera recovery ---
     reopen_after_failures: int = 5

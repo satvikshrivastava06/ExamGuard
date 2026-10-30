@@ -19,6 +19,7 @@ class EventType(str, Enum):
     MULTIPLE_FACES = "MULTIPLE_FACES"
     DETECTION_FAILURE = "DETECTION_FAILURE"
     CAMERA_UNAVAILABLE = "CAMERA_UNAVAILABLE"
+    CAMERA_PERMISSION_DENIED = "CAMERA_PERMISSION_DENIED"
 
 
 # Mutually exclusive monitoring states. Everything else is a point-in-time event.
@@ -28,6 +29,7 @@ STATE_TYPES = (
     EventType.MULTIPLE_FACES,
     EventType.DETECTION_FAILURE,
     EventType.CAMERA_UNAVAILABLE,
+    EventType.CAMERA_PERMISSION_DENIED,
 )
 
 
@@ -96,6 +98,7 @@ class IntegrityStateMachine:
             EventType.MULTIPLE_FACES: cfg.hold_multiple_faces_s,
             EventType.DETECTION_FAILURE: cfg.hold_detection_failure_s,
             EventType.CAMERA_UNAVAILABLE: cfg.hold_camera_unavailable_s,
+            EventType.CAMERA_PERMISSION_DENIED: cfg.hold_camera_permission_denied_s,
         }
 
     def _emit(self, etype: EventType, now: float, frame_id: Optional[int], details: dict) -> Event:
