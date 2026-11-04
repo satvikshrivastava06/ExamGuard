@@ -41,6 +41,8 @@ pip install -r requirements.txt
 | Run the same benchmark without a webcam | `python benchmark.py --source sample_images/astronaut_1face.png` |
 | Generate a preprocessing contact sheet | `python preprocessing_demo.py` |
 | Use the DNN detector | `python download_model.py`, then `python preview.py --detector yunet` |
+| Monitor a video meeting | Install Playwright with `pip install playwright` and `playwright install chromium`, then run `python meet_monitor.py --session-id EXAM-2026-S0001 --meet-url "https://meet.google.com/..."` |
+| Generate an accuracy report from event logs | `python accuracy_report.py [log-file ...]` (defaults to all `logs/events_*.jsonl` files) |
 | Run the unit test suite | `python -m pytest -q` |
 
 ## Event Log

@@ -9,7 +9,7 @@ backend session lookup, API endpoints.
 | Piece | Role |
 |---|---|
 | `validate_session_id` | Allow-list check (8-64 chars of `[A-Za-z0-9_-]`, `fullmatch`). The ID becomes part of a log file name, so this also blocks path traversal. |
-| `MonitoringStatus` | Frozen (immutable) snapshot: `session_id`, `active`, confirmed `state`, `state_since_utc`, `last_event_type`, `last_observation_utc`, `event_count`. Safe to return from an API handler. |
+| `MonitoringStatus` | Frozen (immutable) snapshot: `session_id`, `active`, confirmed `state`, `state_since_local`, `last_event_type`, `last_observation_local`, `event_count`. Safe to return from an API handler. |
 | `_BoundSink` | Wraps the event sink. Raises `SessionMismatch` if an event's `session_id` differs from the bound one. Association is enforced on every write. |
 | `SessionMonitor` | One monitor, one session. Owns a state machine and a lock. `observe()` feeds frames; `status()` reads the snapshot. |
 | `MonitoringRegistry` | `bind(id)`, `get_status(id)`, `list_active()`, `release(id)`. Rejects invalid IDs, IDs the validator refuses, and a second live monitor for the same ID. |

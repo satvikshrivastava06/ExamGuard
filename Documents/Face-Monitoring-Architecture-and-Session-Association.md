@@ -95,7 +95,7 @@ Events use JSON Lines (one JSON object per line):
 {
   "type": "FACE_ABSENT",
   "session_id": "49bc65c7",
-  "ts_utc": "2026-10-18T15:59:30.786+00:00",
+    "ts_local": "2026-10-18T15:59:30.786+00:00",
   "ts_mono": 200.933664237,
   "frame_id": 78,
   "details": {
@@ -108,7 +108,7 @@ Events use JSON Lines (one JSON object per line):
 }
 ```
 
-- `ts_utc` supports correlation across systems.
+- `ts_local` is ISO-8601 with the operator machine's UTC offset.
 - `ts_mono` is used for duration calculations and is not affected by system clock changes.
 
 The following items are not yet specified and are deferred to Sprint 2: event severity levels, reviewer workflow, log-retention period, tamper-evidence for the log, and clock synchronisation with the server.
@@ -214,7 +214,7 @@ The following have not been measured: real webcam capture, YuNet performance, an
 | Component | Role |
 |---|---|
 | `validate_session_id` | Applies an allow-list check: 8–64 characters from `[A-Za-z0-9_-]`, validated with `fullmatch`. Because the ID is used in a log filename, this also helps prevent path traversal. |
-| `MonitoringStatus` | Provides a frozen (immutable) snapshot containing `session_id`, `active`, the confirmed `state`, `state_since_utc`, `last_event_type`, `last_observation_utc`, and `event_count`. It is safe to return from an API handler. |
+| `MonitoringStatus` | Provides a frozen (immutable) snapshot containing `session_id`, `active`, the confirmed `state`, `state_since_local`, `last_event_type`, `last_observation_local`, and `event_count`. It is safe to return from an API handler. |
 | `_BoundSink` | Wraps the event sink and raises `SessionMismatch` if an event's `session_id` differs from the bound session. The association is checked on every write. |
 | `SessionMonitor` | Manages one monitor for one session. It owns a state machine and a lock. `observe()` feeds in observations; `status()` returns the current snapshot. |
 | `MonitoringRegistry` | Provides `bind(id)`, `get_status(id)`, `list_active()`, and `release(id)`. It rejects invalid IDs, IDs refused by the validator, and attempts to create a second live monitor for the same ID. |

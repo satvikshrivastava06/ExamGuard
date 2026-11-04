@@ -64,11 +64,11 @@ Rules
 
 Envelope (JSON Lines, one per line)
 ```json
-{"type":"FACE_ABSENT","session_id":"49bc65c7","ts_utc":"2026-10-18T15:59:30.786+00:00",
+{"type":"FACE_ABSENT","session_id":"49bc65c7","ts_local":"2026-10-18T15:59:30.786+00:00",
  "ts_mono":200.933664237,"frame_id":78,
  "details":{"n_faces":0,"max_confidence":0.0,"detector":"haar","previous_state":"FACE_PRESENT","previous_duration_s":412.6}}
 ```
-`ts_utc` for correlation across systems; `ts_mono` for durations (immune to clock changes).
+`ts_local` is ISO-8601 with the operator machine's UTC offset; `ts_mono` is used for durations (immune to clock changes).
 
 Not yet specified (Sprint 2): event severity levels, reviewer workflow, retention period, tamper-evidence of the log, clock sync with the server.
 

@@ -13,7 +13,7 @@ import re
 import threading
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Callable, Optional
 
 from .config import Config
@@ -45,20 +45,20 @@ def validate_session_id(raw: object) -> str:
     return raw
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+def _local_now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
 @dataclass(frozen=True)
 class MonitoringStatus:
     """Immutable snapshot. Safe to hand to another thread or serialise into an API response."""
     session_id: str
-    bound_at_utc: str
+    bound_at_local: str
     active: bool = True
     state: Optional[str] = None              # last CONFIRMED state (after debounce), None until first
-    state_since_utc: Optional[str] = None
+    state_since_local: Optional[str] = None
     last_event_type: Optional[str] = None
-    last_observation_utc: Optional[str] = None   # liveness: advances on every analysed frame
+    last_observation_local: Optional[str] = None   # liveness: advances on every analysed frame
     event_count: int = 0
 
     def to_dict(self) -> dict:
@@ -90,7 +90,7 @@ class SessionMonitor:
         self.session_id = session_id            # read-only by convention; the sink guard enforces it
         self._clock = clock
         self._lock = threading.Lock()           # guards _status and the state machine
-        self._status = MonitoringStatus(session_id=session_id, bound_at_utc=_utc_now())
+        self._status = MonitoringStatus(session_id=session_id, bound_at_local=_local_now())
         self._sink = _BoundSink(session_id, sink, self._apply_event)
         self._machine = IntegrityStateMachine(cfg, session_id, self._sink)
 
@@ -98,7 +98,7 @@ class SessionMonitor:
     def _apply_event(self, ev: Event) -> None:
         changes: dict = {"last_event_type": ev.type.value, "event_count": self._status.event_count + 1}
         if ev.type in STATE_TYPES:
-            changes.update(state=ev.type.value, state_since_utc=ev.ts_utc)
+            changes.update(state=ev.type.value, state_since_local=ev.ts_local)
         self._status = replace(self._status, **changes)
 
     def observe(self, obs: EventType, now: float, frame_id: Optional[int] = None,
@@ -107,7 +107,7 @@ class SessionMonitor:
             if not self._status.active:
                 raise SessionNotMonitored(f"monitor for {self.session_id!r} is closed")
             events = self._machine.observe(obs, now, frame_id, details)
-            self._status = replace(self._status, last_observation_utc=_utc_now())
+            self._status = replace(self._status, last_observation_local=_local_now())
             return events
 
     def status(self) -> MonitoringStatus:

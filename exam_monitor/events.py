@@ -1,13 +1,37 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Protocol
 
 from .config import Config
+
+
+def _mono_to_local_iso(ts_mono: float) -> str:
+    """Convert a time.monotonic() value to a local-timezone ISO-8601 string.
+
+    We anchor wall-clock↔monotonic once at import time so that every event's
+    ``ts_local`` is derived from the *same* monotonic reading the caller
+    passed as ``ts_mono``, rather than from a separate ``datetime.now()``
+    call that races against the event loop.
+
+    The result includes the local UTC-offset (e.g. ``+05:30``) so the
+    timestamp is unambiguous while still matching the clock on the operator's
+    machine.
+    """
+    delta = ts_mono - _MONO_EPOCH
+    local_dt = (_UTC_EPOCH + timedelta(seconds=delta)).astimezone()
+    return local_dt.isoformat(timespec="milliseconds")
+
+
+# Capture the correspondence between wall-clock and monotonic once, at import
+# time, so all events in a process share a stable epoch.
+_UTC_EPOCH: datetime = datetime.now(timezone.utc)
+_MONO_EPOCH: float = time.monotonic()
 
 
 class EventType(str, Enum):
@@ -37,7 +61,7 @@ STATE_TYPES = (
 class Event:
     type: EventType
     session_id: str
-    ts_utc: str
+    ts_local: str          # ISO-8601 with local UTC-offset, e.g. 2026-11-03T18:34:31.884+05:30
     ts_mono: float
     frame_id: Optional[int] = None
     details: dict = field(default_factory=dict)
@@ -102,7 +126,7 @@ class IntegrityStateMachine:
         }
 
     def _emit(self, etype: EventType, now: float, frame_id: Optional[int], details: dict) -> Event:
-        ev = Event(etype, self.session_id, datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        ev = Event(etype, self.session_id, _mono_to_local_iso(now),
                    now, frame_id, details)
         self.sink.write(ev)
         return ev
