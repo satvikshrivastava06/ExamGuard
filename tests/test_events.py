@@ -76,3 +76,13 @@ def test_non_state_observation_rejected():
     sm, _ = make()
     with pytest.raises(ValueError):
         sm.observe(E.SESSION_STARTED, 0)
+
+
+def test_permission_denied_is_a_confirmed_state_with_its_own_hold():
+    sm, sink = make()
+    feed(sm, E.FACE_PRESENT, 0, 1)
+    feed(sm, E.CAMERA_PERMISSION_DENIED, 1.1, 1.5)       # < hold? CFG hold is 0.5 s
+    feed(sm, E.CAMERA_PERMISSION_DENIED, 1.6, 2.0)
+    assert E.CAMERA_PERMISSION_DENIED in types(sink)
+    feed(sm, E.FACE_PRESENT, 2.1, 3.0)
+    assert types(sink)[-1] == E.FACE_PRESENT             # recovery event after the user grants access

@@ -6,6 +6,8 @@ Guarantees:
   3. At most one live monitor exists per session ID.
   4. Status is readable from another thread (e.g. an API handler) without tearing.
 
+Not covered here: whether the session exists / is ACTIVE / belongs to this candidate. That is the
+backend's decision (Team 1). Plug it in through the `validator` argument of MonitoringRegistry.
 """
 from __future__ import annotations
 
@@ -13,9 +15,10 @@ import re
 import threading
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from .absence import AbsenceEpisode, AbsenceTracker, reason_for
 from .config import Config
 from .events import Event, EventSink, EventType, IntegrityStateMachine, STATE_TYPES
 
@@ -45,21 +48,24 @@ def validate_session_id(raw: object) -> str:
     return raw
 
 
-def _local_now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 @dataclass(frozen=True)
 class MonitoringStatus:
     """Immutable snapshot. Safe to hand to another thread or serialise into an API response."""
     session_id: str
-    bound_at_local: str
+    bound_at_utc: str
     active: bool = True
     state: Optional[str] = None              # last CONFIRMED state (after debounce), None until first
-    state_since_local: Optional[str] = None
+    state_since_utc: Optional[str] = None
     last_event_type: Optional[str] = None
-    last_observation_local: Optional[str] = None   # liveness: advances on every analysed frame
+    last_observation_utc: Optional[str] = None   # liveness: advances on every analysed frame
     event_count: int = 0
+    absence_ongoing_s: float = 0.0           # length of the absence in progress (live view)
+    prolonged_absence_count: int = 0         # recorded episodes (each >= prolonged_absence_s)
+    prolonged_absence_total_s: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -90,15 +96,22 @@ class SessionMonitor:
         self.session_id = session_id            # read-only by convention; the sink guard enforces it
         self._clock = clock
         self._lock = threading.Lock()           # guards _status and the state machine
-        self._status = MonitoringStatus(session_id=session_id, bound_at_local=_local_now())
+        self._status = MonitoringStatus(session_id=session_id, bound_at_utc=_utc_now())
         self._sink = _BoundSink(session_id, sink, self._apply_event)
         self._machine = IntegrityStateMachine(cfg, session_id, self._sink)
+        self._absence = AbsenceTracker(cfg.prolonged_absence_s)
+        self._last_obs: Optional[float] = None
+        self._threshold_s = cfg.prolonged_absence_s
 
     # Called only from inside a locked section (machine -> sink -> here), so it takes no lock itself.
     def _apply_event(self, ev: Event) -> None:
         changes: dict = {"last_event_type": ev.type.value, "event_count": self._status.event_count + 1}
         if ev.type in STATE_TYPES:
-            changes.update(state=ev.type.value, state_since_local=ev.ts_local)
+            changes.update(state=ev.type.value, state_since_utc=ev.ts_utc)
+        if ev.type == EventType.PROLONGED_ABSENCE:
+            changes.update(prolonged_absence_count=self._status.prolonged_absence_count + 1,
+                           prolonged_absence_total_s=round(self._status.prolonged_absence_total_s
+                                                           + ev.details.get("duration_s", 0.0), 3))
         self._status = replace(self._status, **changes)
 
     def observe(self, obs: EventType, now: float, frame_id: Optional[int] = None,
@@ -106,9 +119,38 @@ class SessionMonitor:
         with self._lock:
             if not self._status.active:
                 raise SessionNotMonitored(f"monitor for {self.session_id!r} is closed")
+            prev_obs = self._last_obs
             events = self._machine.observe(obs, now, frame_id, details)
-            self._status = replace(self._status, last_observation_local=_local_now())
+            self._last_obs = now
+            events.extend(self._follow_absence(obs, now, frame_id, events, prev_obs))
+            self._status = replace(self._status, last_observation_utc=_utc_now(),
+                                   absence_ongoing_s=round(self._absence.ongoing_s(now), 3))
             return events
+
+    def _follow_absence(self, obs: EventType, now: float, frame_id: Optional[int], events: list[Event],
+                        prev_obs: Optional[float]) -> list[Event]:
+        """Feed the tracker from the machine's CONFIRMED transitions (never from raw frames)."""
+        out: list[Event] = []
+        for ev in events:
+            episode = None
+            if ev.type == EventType.SESSION_INTERRUPTED and self._absence.active:
+                # we froze: the absence stops at the last thing we saw, and the gap is not counted
+                episode = self._absence.leave(prev_obs if prev_obs is not None else now, "interrupted")
+            elif ev.type in STATE_TYPES:
+                if self._absence.active:
+                    episode = self._absence.leave(self._machine.last_transition_started, reason_for(ev.type))
+                if ev.type == EventType.FACE_ABSENT:
+                    self._absence.enter(self._machine.last_transition_started, now)
+            if episode is not None:
+                out.append(self._record_episode(episode, now, frame_id))
+        # After a stall the machine keeps its FACE_ABSENT state; resume tracking from this observation.
+        if (obs == EventType.FACE_ABSENT and self._machine.state == EventType.FACE_ABSENT
+                and not self._absence.active):
+            self._absence.enter(now, now)
+        return out
+
+    def _record_episode(self, episode: AbsenceEpisode, now: float, frame_id: Optional[int]) -> Event:
+        return self._machine.record(EventType.PROLONGED_ABSENCE, now, frame_id, episode.details(self._threshold_s))
 
     def status(self) -> MonitoringStatus:
         with self._lock:
@@ -121,8 +163,13 @@ class SessionMonitor:
     def _close(self) -> MonitoringStatus:
         with self._lock:
             if self._status.active:
-                self._machine.end(self._clock())
-                self._status = replace(self._status, active=False)
+                now = self._clock()
+                # Conservative end: the last moment we actually observed, not 'now'.
+                episode = self._absence.leave(self._last_obs if self._last_obs is not None else now, "session_ended")
+                if episode is not None:
+                    self._record_episode(episode, now, None)      # must precede SESSION_ENDED
+                self._machine.end(now)
+                self._status = replace(self._status, active=False, absence_ongoing_s=0.0)
             self._sink.close()
             return self._status
 

@@ -47,6 +47,14 @@ class Camera:
         return isinstance(self.source, int)
 
     @property
+    def file_fps(self) -> float:
+        """Native frame rate of a video FILE. 0 for webcams, still images, or when unknown."""
+        if self._cap is None or self.is_webcam:
+            return 0.0
+        fps = self._cap.get(cv2.CAP_PROP_FPS)
+        return float(fps) if fps and fps > 0 else 0.0
+
+    @property
     def is_open(self) -> bool:
         return self._cap is not None or self._still is not None
 
@@ -104,3 +112,9 @@ class Camera:
             self._cap.release()
         self._cap = None
         self._still = None
+
+    def __enter__(self) -> "Camera":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()

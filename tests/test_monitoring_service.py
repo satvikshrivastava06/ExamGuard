@@ -161,7 +161,7 @@ def test_detector_exception_becomes_detection_failure_and_worker_survives():
     service, reg, sinks = make(detector_factory=lambda name, cfg: Exploding())
     try:
         service.start_monitoring(SID_A, FACE)
-        assert wait_for(lambda: service.get_status(SID_A).state == "DETECTION_FAILURE")
+        assert wait_for(lambda: service.get_status(SID_A).state == "DETECTION_UNAVAILABLE")
         assert service.is_running(SID_A)
     finally:
         service.stop_all()
@@ -302,7 +302,7 @@ def test_black_frames_become_permission_denied_only_when_os_blocks(monkeypatch):
     try:
         service.start_monitoring(SID_A, 0)
         assert wait_for(lambda: service.get_status(SID_A).state == "CAMERA_PERMISSION_DENIED")
-        assert events_of(sinks, SID_A, E.DETECTION_FAILURE) == []
+        assert events_of(sinks, SID_A, E.DETECTION_UNAVAILABLE) == []
     finally:
         service.stop_all()
 
@@ -313,7 +313,7 @@ def test_black_frames_with_permission_granted_stay_detection_failure(monkeypatch
     service, sinks = make_diag()
     try:
         service.start_monitoring(SID_A, 0)
-        assert wait_for(lambda: service.get_status(SID_A).state == "DETECTION_FAILURE")   # lens cover / dark room
+        assert wait_for(lambda: service.get_status(SID_A).state == "DETECTION_UNAVAILABLE")   # lens cover / dark room
         assert events_of(sinks, SID_A, E.CAMERA_PERMISSION_DENIED) == []
     finally:
         service.stop_all()
@@ -345,3 +345,30 @@ def test_preflight_camera_does_not_create_a_session(svc):
     assert service.preflight_camera(FACE).ok
     assert not service.preflight_camera("does_not_exist.mp4").ok
     assert sinks == {} and monitor_threads() == []
+
+
+# ====================================================================== video files must play in real time
+def _make_video(path, fps, frames=100):
+    import cv2
+    w = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, (160, 120))
+    for i in range(frames):
+        f = np.full((120, 160, 3), 100, np.uint8)
+        cv2.rectangle(f, (i % 100, 40), (i % 100 + 30, 80), (255, 255, 255), -1)
+        w.write(f)
+    w.release()
+
+
+@pytest.mark.parametrize("fps", [5, 10, 25])
+def test_video_file_is_paced_at_its_own_frame_rate(tmp_path, fps):
+    """REGRESSION: files used to be paced at cfg.capture_fps (30), so a 10 fps clip played 3x too fast
+    and every duration threshold was judged against the wrong clock."""
+    video = tmp_path / f"v{fps}.avi"
+    _make_video(video, fps)
+    service, reg, sinks = make()
+    try:
+        service.start_monitoring(SID_A, str(video))
+        time.sleep(2.0)
+        read = service.snapshot(SID_A).frames_read
+    finally:
+        service.stop_all()
+    assert 0.6 * 2.0 * fps <= read <= 1.4 * 2.0 * fps, f"{fps} fps video: read {read} frames in 2 s"

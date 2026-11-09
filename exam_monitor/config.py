@@ -12,7 +12,8 @@ class Config:
 
     # --- Real-time processing ---
     process_width: int = 320      # detector input width; boxes are mapped back to full res
-    process_every_n: int = 2      # frame skipping: analyse 1 of every N frames
+    process_every_n: int = 2      # frame sampling mode A: analyse 1 of every N frames
+    sample_target_fps: float = 0.0   # mode B: analyse at most this many frames/second of wall time (0 = use process_every_n)
 
     # --- Haar cascade ---
     haar_scale_factor: float = 1.1
@@ -36,6 +37,9 @@ class Config:
     hold_camera_unavailable_s: float = 2.0
     hold_camera_permission_denied_s: float = 0.5   # an OS-level block is not flaky, so confirm quickly
     stall_s: float = 2.0               # gap between observations that counts as an interruption
+
+    # --- Prolonged absence (absence.py) ---
+    prolonged_absence_s: float = 10.0      # an absence is RECORDED only if it lasts at least this long
 
     # --- Camera diagnosis ---
     black_frame_luma: float = 3.0          # preflight: all frames below this mean grey level = black feed

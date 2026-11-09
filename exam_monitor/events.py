@@ -1,37 +1,13 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Protocol
 
 from .config import Config
-
-
-def _mono_to_local_iso(ts_mono: float) -> str:
-    """Convert a time.monotonic() value to a local-timezone ISO-8601 string.
-
-    We anchor wall-clock↔monotonic once at import time so that every event's
-    ``ts_local`` is derived from the *same* monotonic reading the caller
-    passed as ``ts_mono``, rather than from a separate ``datetime.now()``
-    call that races against the event loop.
-
-    The result includes the local UTC-offset (e.g. ``+05:30``) so the
-    timestamp is unambiguous while still matching the clock on the operator's
-    machine.
-    """
-    delta = ts_mono - _MONO_EPOCH
-    local_dt = (_UTC_EPOCH + timedelta(seconds=delta)).astimezone()
-    return local_dt.isoformat(timespec="milliseconds")
-
-
-# Capture the correspondence between wall-clock and monotonic once, at import
-# time, so all events in a process share a stable epoch.
-_UTC_EPOCH: datetime = datetime.now(timezone.utc)
-_MONO_EPOCH: float = time.monotonic()
 
 
 class EventType(str, Enum):
@@ -41,9 +17,11 @@ class EventType(str, Enum):
     FACE_PRESENT = "FACE_PRESENT"
     FACE_ABSENT = "FACE_ABSENT"
     MULTIPLE_FACES = "MULTIPLE_FACES"
-    DETECTION_FAILURE = "DETECTION_FAILURE"
+    DETECTION_UNAVAILABLE = "DETECTION_UNAVAILABLE"   # we cannot judge: dark/blown-out frame or detector error
+    DETECTION_FAILURE = "DETECTION_UNAVAILABLE"       # old name, kept as an alias of the same member
     CAMERA_UNAVAILABLE = "CAMERA_UNAVAILABLE"
     CAMERA_PERMISSION_DENIED = "CAMERA_PERMISSION_DENIED"
+    PROLONGED_ABSENCE = "PROLONGED_ABSENCE"           # point event: a finished absence that reached the threshold
 
 
 # Mutually exclusive monitoring states. Everything else is a point-in-time event.
@@ -51,7 +29,7 @@ STATE_TYPES = (
     EventType.FACE_PRESENT,
     EventType.FACE_ABSENT,
     EventType.MULTIPLE_FACES,
-    EventType.DETECTION_FAILURE,
+    EventType.DETECTION_UNAVAILABLE,
     EventType.CAMERA_UNAVAILABLE,
     EventType.CAMERA_PERMISSION_DENIED,
 )
@@ -61,7 +39,7 @@ STATE_TYPES = (
 class Event:
     type: EventType
     session_id: str
-    ts_local: str          # ISO-8601 with local UTC-offset, e.g. 2026-11-03T18:34:31.884+05:30
+    ts_utc: str
     ts_mono: float
     frame_id: Optional[int] = None
     details: dict = field(default_factory=dict)
@@ -79,7 +57,8 @@ class EventSink(Protocol):
 class JsonlSink:
     """Append-only JSON Lines. Stores event metadata only: never frames, crops or embeddings."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: "Path | str"):
+        path = Path(path)                      # accept str or Path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._f = open(path, "a", encoding="utf-8", buffering=1)  # line-buffered
         self.path = path
@@ -87,8 +66,18 @@ class JsonlSink:
     def write(self, event: Event) -> None:
         self._f.write(event.to_json() + "\n")
 
+    @property
+    def closed(self) -> bool:
+        return self._f.closed
+
     def close(self) -> None:
-        self._f.close()
+        self._f.close()                    # closing twice is harmless
+
+    def __enter__(self) -> "JsonlSink":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
 
 class ListSink:
@@ -116,20 +105,26 @@ class IntegrityStateMachine:
         self._cand: Optional[EventType] = None
         self._cand_since = 0.0
         self._last_obs: Optional[float] = None
+        self.last_transition_started = 0.0   # when the observations behind the latest confirmed state began
         self._hold = {
             EventType.FACE_PRESENT: cfg.hold_face_present_s,
             EventType.FACE_ABSENT: cfg.hold_face_absent_s,
             EventType.MULTIPLE_FACES: cfg.hold_multiple_faces_s,
-            EventType.DETECTION_FAILURE: cfg.hold_detection_failure_s,
+            EventType.DETECTION_UNAVAILABLE: cfg.hold_detection_failure_s,
             EventType.CAMERA_UNAVAILABLE: cfg.hold_camera_unavailable_s,
             EventType.CAMERA_PERMISSION_DENIED: cfg.hold_camera_permission_denied_s,
         }
 
     def _emit(self, etype: EventType, now: float, frame_id: Optional[int], details: dict) -> Event:
-        ev = Event(etype, self.session_id, _mono_to_local_iso(now),
+        ev = Event(etype, self.session_id, datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                    now, frame_id, details)
         self.sink.write(ev)
         return ev
+
+    def record(self, etype: EventType, now: float, frame_id: Optional[int] = None,
+               details: Optional[dict] = None) -> Event:
+        """Emit a point event (not a state change) through the same sink, stamped with this session."""
+        return self._emit(etype, now, frame_id, dict(details or {}))
 
     def start(self, now: float) -> Event:
         return self._emit(EventType.SESSION_STARTED, now, None, {})
@@ -158,6 +153,7 @@ class IntegrityStateMachine:
             self._cand, self._cand_since = obs, now
         if now - self._cand_since >= self._hold[obs]:
             prev = self.state
+            self.last_transition_started = self._cand_since
             d = dict(details or {})
             d["previous_state"] = prev.value if prev else None
             d["previous_duration_s"] = round(now - self._state_since, 3) if prev else None

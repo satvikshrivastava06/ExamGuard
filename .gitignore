@@ -7,3 +7,8 @@ venv/
 logs/*
 output/*
 models/*.onnx
+sample_images/robustness/
+sample_videos/
+Paste_it/
+*PASTE_GUIDE*
+

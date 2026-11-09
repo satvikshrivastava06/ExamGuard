@@ -24,11 +24,13 @@ use preflight_camera() or start_monitoring(require_camera=True).
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import sys
 import threading
 import time
-from dataclasses import dataclass
+import weakref
+from dataclasses import dataclass, replace
 from typing import Callable, Optional, Union
 
 import numpy as np
@@ -42,6 +44,7 @@ from .detector import Detection, FaceDetector, build_detector
 from .events import EventType
 from .metrics import FpsMeter, LatencyTracker, ResourceMonitor
 from .pipeline import analyze_frame
+from .sampler import FrameSampler
 from .session_binding import (
     MonitoringRegistry, MonitoringStatus, SessionBindingError, SessionMonitor,
     SessionNotMonitored, validate_session_id,
@@ -76,6 +79,8 @@ class LiveSnapshot:
     proc_cpu_pct: float
     rss_mb: float
     frame: Optional[np.ndarray] = None      # only when publish_frames=True; flagged non-writeable
+    frames_read: int = 0                    # frames captured so far
+    frames_analysed: int = 0                # frames the sampler chose to run detection on
 
 
 @dataclass(frozen=True)
@@ -143,13 +148,24 @@ class _Worker(threading.Thread):
             log.exception("monitor worker for %s died", self._monitor.session_id)
         finally:
             self._cam.release()           # the thread that used the camera closes it
+            close = getattr(self._detector, "close", None)
+            if callable(close):           # detectors that hold native resources can opt in
+                try:
+                    close()
+                except Exception:
+                    log.exception("detector close failed for %s", self._monitor.session_id)
+            with self._snap_lock:         # drop the last frame copy so it can be freed
+                self._snap = replace(self._snap, frame=None)
 
     def _loop(self) -> None:
         cfg, cam = self._cfg, self._cam
         lat, fps, res = LatencyTracker(), FpsMeter(), ResourceMonitor()
         resources, last_res = res.sample(), time.monotonic()
-        period = 0.0 if cam.is_webcam else 1.0 / cfg.capture_fps   # real-time pacing for files/stills
+        # A webcam paces itself. A video FILE must play at its own frame rate, otherwise every time
+        # threshold is judged against a sped-up or slowed-down clock. Stills use the configured rate.
+        period = 0.0 if cam.is_webcam else 1.0 / (cam.file_fps or cfg.capture_fps)
         frame_id, dets = 0, ()
+        sampler = FrameSampler.from_config(cfg)
 
         while not self._stop_evt.is_set():
             t_loop = time.perf_counter()
@@ -166,10 +182,10 @@ class _Worker(threading.Thread):
                 frame_id += 1
                 continue
 
-            if frame_id % cfg.process_every_n == 0:
+            if sampler.should_process(frame_id, now):
                 t0 = time.perf_counter()
                 obs, found, details = analyze_frame(frame, self._detector, cfg)
-                if (obs == EventType.DETECTION_FAILURE and cam.is_webcam
+                if (obs == EventType.DETECTION_UNAVAILABLE and cam.is_webcam
                         and details.get("reason") == "too_dark_or_lens_covered"):
                     etype, info = self._camera_problem(now, "dark_frames")
                     if etype == EventType.CAMERA_PERMISSION_DENIED:    # blocked camera, not a dark room
@@ -182,20 +198,22 @@ class _Worker(threading.Thread):
             fps.tick()
             if now - last_res >= 1.0:
                 resources, last_res = res.sample(), now
-            self._publish_snapshot(frame_id, dets, fps.fps, lat, resources, frame)
+            self._publish_snapshot(frame_id, dets, fps.fps, lat, resources, frame, sampler)
             frame_id += 1
 
             if period:
                 self._stop_evt.wait(max(0.0, period - (time.perf_counter() - t_loop)))
 
-    def _publish_snapshot(self, frame_id, dets, fps, lat: LatencyTracker, resources, frame) -> None:
+    def _publish_snapshot(self, frame_id, dets, fps, lat: LatencyTracker, resources, frame,
+                          sampler: FrameSampler) -> None:
         stats = lat.stats("analyze_ms")
         shown = None
         if self._publish:
             shown = frame.copy()                      # own copy: the camera may reuse its buffer
             shown.flags.writeable = False             # readers must copy before drawing
         snap = LiveSnapshot(frame_id, dets, fps, stats["p50"], stats["p95"],
-                            resources["proc_cpu_pct"], resources["rss_mb"], shown)
+                            resources["proc_cpu_pct"], resources["rss_mb"], shown,
+                            frames_read=sampler.seen, frames_analysed=sampler.selected)
         with self._snap_lock:
             self._snap = snap
 
@@ -206,6 +224,19 @@ class MonitoringService:
         self._cfg, self._registry, self._detector_factory = cfg, registry, detector_factory
         self._lock = threading.Lock()           # guards _workers; held only for short sections
         self._workers: dict[str, _Worker] = {}
+        # Safety net: if the program exits without stop_all(), still end sessions and close logs.
+        # A weak reference so registering does not keep the service alive forever.
+        ref = weakref.ref(self)
+        atexit.register(lambda: (svc := ref()) is not None and svc.stop_all(timeout=2.0))
+
+    def __enter__(self) -> "MonitoringService":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop_all()                           # runs even if the body raised
+
+    def close(self) -> None:
+        self.stop_all()
 
     # ------------------------------------------------------------------ start
     def preflight_camera(self, source: Source = 0, **kwargs) -> CameraCheck:
