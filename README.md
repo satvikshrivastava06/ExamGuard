@@ -60,3 +60,11 @@ Preview keys: q stops monitoring and quits (the old `m` detector switch was remo
 | All tests / skip the slow video tests | `python -m pytest -q` / `python -m pytest -q -m "not slow"` |
 
 Docs: `docs/sprint3_explained.md`. `sample_images/robustness/` and `sample_videos/` are generated; do not commit them.
+
+## Recent Updates: Data Persistence & Health Monitoring
+| Feature | Description | Where |
+|---|---|---|
+| **MySQL Integration** | Persistent storage for session metadata, debounced events, and raw per-frame detections. | `exam_monitor/database.py` |
+| **Event Publishing** | A decoupled publish-subscribe system (`EventBus`) with asynchronous buffered delivery to prevent pipeline blocking. | `exam_monitor/event_publisher.py` |
+| **Health Monitoring** | Real-time diagnostics tracking FPS, latency, CPU, and component status (Healthy/Degraded/Unhealthy). | `exam_monitor/health.py` |
+
