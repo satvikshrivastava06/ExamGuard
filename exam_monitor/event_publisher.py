@@ -198,12 +198,7 @@ class BufferedPublisher:
         max_queue_size: int = 1000,
         name: str = "buffered",
     ):
-        if callable(getattr(target, "publish", None)):
-            self._target: EventPublisher = target  # type: ignore[assignment]
-        elif callable(getattr(target, "write", None)):
-            self._target = SinkPublisher(target, name)  # type: ignore[arg-type]
-        else:
-            self._target = CallbackPublisher(target, name)  # type: ignore[arg-type]
+        self._target = target
         self._max_retries = max_retries
         self._retry_delay = retry_delay_s
         self._name = name
@@ -259,12 +254,26 @@ class BufferedPublisher:
                     self._try_deliver(ev)
             except queue.Empty:
                 break
+        close_fn = getattr(self._target, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+
+    def _invoke_target(self, event: Event) -> None:
+        if callable(getattr(self._target, "publish", None)):
+            self._target.publish(event)
+        elif callable(getattr(self._target, "write", None)):
+            self._target.write(event)
+        elif callable(self._target):
+            self._target(event)
 
     def _drain(self) -> None:
         while True:
             try:
                 # Use a short timeout to check for stop signal
-                event = self._q.get(timeout=0.1)
+                event = self._q.get(timeout=0.05)
             except queue.Empty:
                 if self._stop.is_set():
                     break
@@ -282,22 +291,21 @@ class BufferedPublisher:
             self._try_deliver(event)
 
     def _try_deliver(self, event: Event) -> None:
-        for attempt in range(1, self._max_retries + 1):
+        total_attempts = self._max_retries + 1
+        for attempt in range(1, total_attempts + 1):
             try:
-                self._target.publish(event)
+                self._invoke_target(event)
                 self._delivered += 1
                 return
             except Exception:
-                if attempt == self._max_retries:
+                if attempt == total_attempts:
                     log.exception("publisher %r: dropping %s after %d retries",
                                   self._name, event.type.value, self._max_retries)
                     self._dropped += 1
                 else:
                     log.warning("publisher %r: retry %d/%d for %s",
                                 self._name, attempt, self._max_retries, event.type.value)
-                    # Only sleep if we haven't been told to stop
-                    if not self._stop.is_set():
-                        time.sleep(self._retry_delay)
+                    time.sleep(self._retry_delay)
 
 
 # ---------------------------------------------------------------------------

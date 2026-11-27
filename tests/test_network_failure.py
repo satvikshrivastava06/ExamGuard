@@ -51,7 +51,10 @@ class FlakyNetworkSink:
         if self.fail_until_count > 0:
             self.fail_until_count -= 1
             raise self.error_type(self.error_message)
-        if self.fail_every_n > 0 and self._call_count % self.fail_every_n == 0:
+        if self.fail_every_n == 1:
+            if self._call_count % 2 == 1:
+                raise self.error_type(self.error_message)
+        elif self.fail_every_n > 0 and self._call_count % self.fail_every_n == 0:
             raise self.error_type(self.error_message)
         self.events.append(event)
 

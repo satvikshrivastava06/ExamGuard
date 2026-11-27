@@ -92,10 +92,12 @@ class StopResult:
 
 class _Worker(threading.Thread):
     def __init__(self, monitor: SessionMonitor, cam: Camera, detector: FaceDetector,
-                 cfg: Config, publish_frames: bool, source: Source):
+                 cfg: Config, publish_frames: bool, source: Source,
+                 on_detections: Optional[Callable[[str, int, tuple[Detection, ...]], None]] = None):
         super().__init__(name=f"monitor-{monitor.session_id}", daemon=True)
         self._monitor, self._cam, self._detector = monitor, cam, detector
         self._cfg, self._publish, self._source = cfg, publish_frames, source
+        self._on_detections = on_detections
         self._os = OsCheck(PermissionState.UNKNOWN, None, "not checked yet")
         self._os_at = float("-inf")
         self._stop_evt = threading.Event()
@@ -192,6 +194,11 @@ class _Worker(threading.Thread):
                         obs, found, details = etype, [], info
                 lat.add("analyze_ms", (time.perf_counter() - t0) * 1e3)
                 dets = tuple(found)
+                if self._on_detections is not None and dets:
+                    try:
+                        self._on_detections(self._monitor.session_id, frame_id, dets)
+                    except Exception:
+                        log.exception("on_detections callback failed for %s", self._monitor.session_id)
                 if not self._observe(obs, now, frame_id, details):
                     return
 
@@ -245,7 +252,8 @@ class MonitoringService:
         return check_camera(source, self._cfg, **kwargs)
 
     def start_monitoring(self, session_id: str, source: Source = 0, detector: str = "haar",
-                         publish_frames: bool = False, require_camera: bool = False) -> MonitoringStatus:
+                         publish_frames: bool = False, require_camera: bool = False,
+                         on_detections: Optional[Callable[[str, int, tuple[Detection, ...]], None]] = None) -> MonitoringStatus:
         """Bind monitoring to `session_id` and start the worker. Raises:
         InvalidSessionId / UnknownSession / SessionAlreadyMonitored (from the registry),
         CameraCheckFailed (require_camera=True and the camera is unusable; nothing was bound),
@@ -270,7 +278,8 @@ class MonitoringService:
             monitor = self._registry.bind(sid)                  # validator, duplicate check, SESSION_STARTED
             try:
                 cam = Camera(source, self._cfg, loop=True)      # never raises; a dead device shows up as events
-                worker = _Worker(monitor, cam, det, self._cfg, publish_frames, source)
+                worker = _Worker(monitor, cam, det, self._cfg, publish_frames, source,
+                                 on_detections=on_detections)
                 self._workers[sid] = worker
                 worker.start()
             except Exception as exc:

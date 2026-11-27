@@ -13,9 +13,11 @@ from pathlib import Path
 
 import cv2
 
+from exam_monitor.accuracy_report import compute_accuracy
 from exam_monitor.config import Config
 from exam_monitor.events import JsonlSink
 from exam_monitor.monitoring_service import CameraCheckFailed, MonitoringService, MonitoringStartError
+from exam_monitor.mysql_cli import add_mysql_args, start_mysql_sync
 from exam_monitor.overlay import blank_frame, draw_detections, draw_hud
 from exam_monitor.session_binding import MonitoringRegistry, SessionBindingError
 
@@ -40,21 +42,39 @@ def main() -> int:
     ap.add_argument("--no-gui", action="store_true", help="no window (CI / headless)")
     ap.add_argument("--max-seconds", type=float, default=0, help="stop after N seconds (0 = until q)")
     ap.add_argument("--log-dir", default="logs")
+    add_mysql_args(ap)
     args = ap.parse_args()
 
     cfg = Config(process_every_n=max(1, args.every), process_width=args.process_width,
                  sample_target_fps=max(0.0, args.sample_fps), prolonged_absence_s=max(0.0, args.absence_threshold))
 
+    mysql_ctx = start_mysql_sync(args)
+    if mysql_ctx is not None:
+        print(f"mysql sync enabled: {args.mysql_host}:{args.mysql_port}/{args.mysql_database}")
+
     # `kill` / service managers send SIGTERM. Turn it into a normal exit so the finally-block below
     # still stops the session, writes SESSION_ENDED and closes the log. (Ctrl+C already raises KeyboardInterrupt.)
     signal.signal(signal.SIGTERM, lambda signum, frame: (_ for _ in ()).throw(SystemExit(0)))
-    registry = MonitoringRegistry(cfg, lambda sid: JsonlSink(Path(args.log_dir) / f"events_{sid}.jsonl"))
+
+    log_path = Path(args.log_dir) / f"events_{args.session_id}.jsonl"
+    sink_factory = (
+        (lambda sid: mysql_ctx.make_sink(Path(args.log_dir) / f"events_{sid}.jsonl"))
+        if mysql_ctx is not None
+        else (lambda sid: JsonlSink(Path(args.log_dir) / f"events_{sid}.jsonl"))
+    )
+    registry = MonitoringRegistry(cfg, sink_factory)
     service = MonitoringService(cfg, registry)
     sid = args.session_id
 
     try:
-        service.start_monitoring(sid, parse_source(args.source), args.detector,
-                                 publish_frames=not args.no_gui, require_camera=args.require_camera)
+        service.start_monitoring(
+            sid,
+            parse_source(args.source),
+            args.detector,
+            publish_frames=not args.no_gui,
+            require_camera=args.require_camera,
+            on_detections=(mysql_ctx.detection_writer.enqueue if mysql_ctx is not None else None),
+        )
     except CameraCheckFailed as exc:
         raise SystemExit(f"Camera not usable [{exc.check.problem.value}]: {exc.check.detail}\n  -> {exc.check.hint}")
     except (SessionBindingError, MonitoringStartError) as exc:
@@ -83,8 +103,10 @@ def main() -> int:
                                   "CAMERA PERMISSION DENIED" if status.state == "CAMERA_PERMISSION_DENIED"
                                   else "CAMERA UNAVAILABLE")
             draw_detections(img, list(snap.detections), multi_face_alert=status.state == "MULTIPLE_FACES")
+            max_conf = max((d.confidence for d in snap.detections), default=0.0)
+            mysql_tag = "ON" if mysql_ctx is not None else "OFF"
             draw_hud(img, [
-                f"session={sid} state={status.state or 'INIT'} faces={len(snap.detections)}",
+                f"session={sid} state={status.state or 'INIT'} faces={len(snap.detections)} conf={max_conf:.2f} mysql={mysql_tag}",
                 f"FPS {snap.fps:5.1f} | analyze p50 {snap.analyze_p50_ms:.1f} / p95 {snap.analyze_p95_ms:.1f} ms",
                 f"cpu={snap.proc_cpu_pct:.0f}% rss={snap.rss_mb:.0f}MB events={status.event_count} "
                 f"analysed {snap.frames_analysed}/{snap.frames_read}",
@@ -105,6 +127,17 @@ def main() -> int:
                   f"analysed {last.frames_analysed}/{last.frames_read} frames")
         print("stopped cleanly:", result.worker_stopped_cleanly, "| worker error:", result.worker_error)
         print("final status:", json.dumps(result.status.to_dict()))
+        report = None
+        if mysql_ctx is not None:
+            report = mysql_ctx.finalize_session(sid, log_path)
+            print(f"[mysql] Synced events, detections, and summary for session {sid}")
+        elif log_path.exists():
+            try:
+                report = compute_accuracy(log_path)
+            except Exception as exc:
+                print(f"[accuracy] Could not generate report: {exc}")
+        if report is not None:
+            report.print()
     return 0
 
 

@@ -164,6 +164,8 @@ class SessionMonitor:
         with self._lock:
             if self._status.active:
                 now = self._clock()
+                if self._last_obs is not None and self._last_obs > now:
+                    now = self._last_obs
                 # Conservative end: the last moment we actually observed, not 'now'.
                 episode = self._absence.leave(self._last_obs if self._last_obs is not None else now, "session_ended")
                 if episode is not None:

@@ -44,6 +44,11 @@ class HealthCheck:
     last_checked_utc: str
     metrics: dict = field(default_factory=dict)
 
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["status"] = self.status.value if hasattr(self.status, "value") else self.status
+        return d
+
 
 @dataclass(frozen=True)
 class DiagnosticReport:
@@ -163,10 +168,10 @@ class HealthMonitor:
 
     def check_fps(self, fps: float) -> HealthCheck:
         """Evaluate FPS and return a health check for it."""
-        if fps < self._fps_unhealthy:
+        if fps <= self._fps_unhealthy:
             status = HealthStatus.UNHEALTHY
             detail = f"FPS critically low: {fps:.1f}"
-        elif fps < self._fps_degraded:
+        elif fps <= self._fps_degraded:
             status = HealthStatus.DEGRADED
             detail = f"FPS below target: {fps:.1f}"
         else:
@@ -176,10 +181,10 @@ class HealthMonitor:
 
     def check_latency(self, p95_ms: float) -> HealthCheck:
         """Evaluate analysis latency and return a health check."""
-        if p95_ms > self._lat_unhealthy:
+        if p95_ms >= self._lat_unhealthy:
             status = HealthStatus.UNHEALTHY
             detail = f"Analysis p95 critically high: {p95_ms:.0f}ms"
-        elif p95_ms > self._lat_degraded:
+        elif p95_ms >= self._lat_degraded:
             status = HealthStatus.DEGRADED
             detail = f"Analysis p95 elevated: {p95_ms:.0f}ms"
         else:
@@ -189,7 +194,7 @@ class HealthMonitor:
 
     def check_resources(self, cpu_pct: float, rss_mb: float) -> HealthCheck:
         """Evaluate resource usage and return a health check."""
-        if cpu_pct > self._cpu_degraded:
+        if cpu_pct >= self._cpu_degraded:
             status = HealthStatus.DEGRADED
             detail = f"High CPU usage: {cpu_pct:.0f}%"
         else:

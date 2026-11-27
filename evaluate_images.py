@@ -1,6 +1,6 @@
-"""Score face detection on the labelled robustness images (lighting, angle, occlusion, ...).
+"""Score face detection on labelled robustness images and compare quality across conditions.
 
-For every image we ask: what would the monitor CONCLUDE? Not just "did the detector fire".
+For every image we ask: what would the monitor CONCLUDE?
   detected          the face was found                                  good
   silent_miss       a face is there, the monitor says FACE_ABSENT       BAD: a false absence nobody is warned about
   flagged           the monitor says DETECTION_UNAVAILABLE (too dark)   acceptable: it admits it cannot judge
@@ -8,7 +8,10 @@ For every image we ask: what would the monitor CONCLUDE? Not just "did the detec
   correct_negative  nothing is there and none was reported             good
 
 Expected face count comes from the file name suffix `_<N>face`.
-Usage:  python evaluate_images.py [--dir sample_images/robustness] [--out output]
+Usage:
+  python evaluate_images.py [--dir sample_images/robustness] [--out output]
+  python evaluate_images.py --compare --baseline control
+  python evaluate_images.py --compare-detectors
 """
 from __future__ import annotations
 
@@ -22,6 +25,11 @@ from pathlib import Path
 import cv2
 
 from exam_monitor.camera import IMAGE_EXTS
+from exam_monitor.condition_comparison import (
+    ConditionComparisonReport,
+    compare_conditions_across_detectors,
+    compare_image_results,
+)
 from exam_monitor.config import Config
 from exam_monitor.detector import FaceDetector, build_detector
 from exam_monitor.events import EventType
@@ -98,13 +106,30 @@ def main() -> int:
     ap.add_argument("--dir", default="sample_images/robustness")
     ap.add_argument("--out", default="output")
     ap.add_argument("--detector", choices=["haar", "yunet"], default="haar")
+    ap.add_argument("--baseline", default="control", help="Baseline condition name for relative quality comparison")
+    ap.add_argument("--compare", action="store_true", help="Perform and print structured condition comparison")
+    ap.add_argument("--compare-detectors", action="store_true", help="Compare multiple detectors (haar vs yunet) across conditions")
+    ap.add_argument("--json", dest="json_out", help="Export condition comparison report to JSON")
     ap.add_argument("--process-width", type=int, default=Config.process_width,
                     help="width the frame is shrunk to before detection (bigger = sees smaller faces, slower)")
     a = ap.parse_args()
 
     cfg = Config(process_width=a.process_width)
-    detector = build_detector(a.detector, cfg)
     root = Path(a.dir)
+
+    if a.compare_detectors:
+        print(f"Comparing detectors [haar, yunet] across sample conditions in {root}...")
+        multi_rep = compare_conditions_across_detectors(root, ("haar", "yunet"), cfg)
+        out = Path(a.out)
+        out.mkdir(parents=True, exist_ok=True)
+        multi_rep.export_markdown(out / "detector_comparison_report.md")
+        if a.json_out:
+            multi_rep.export_json(a.json_out)
+        print(multi_rep.to_markdown())
+        print(f"\n[saved] Markdown report: {out / 'detector_comparison_report.md'}")
+        return 0
+
+    detector = build_detector(a.detector, cfg)
     results = evaluate_dir(root, detector, cfg)
     if not results:
         raise SystemExit(f"no images under {root}. Run: python make_test_assets.py")
@@ -117,6 +142,14 @@ def main() -> int:
         w.writerows([[getattr(r, k) for k in ImageResult.__dataclass_fields__] for r in results])
     (out / "robustness_report.md").write_text(markdown(results, a.detector))
 
+    # Condition comparison
+    comp_report = compare_image_results(results, detector_name=a.detector, baseline_condition=a.baseline)
+    comp_report.export_json(out / "condition_comparison.json")
+    comp_report.export_markdown(out / "condition_comparison.md")
+
+    if a.json_out:
+        comp_report.export_json(a.json_out)
+
     print(f"{'category':12s} {'image':20s} {'exp':>3s} {'got':>3s} {'luma':>6s}  {'monitor says':22s} outcome")
     for r in results:
         print(f"{r.category:12s} {r.name:20s} {r.expected:>3d} {r.faces:>3d} {r.luma:6.1f}  {r.observation:22s} {r.outcome}")
@@ -124,7 +157,14 @@ def main() -> int:
     for cat, c in sorted(summarise(results).items()):
         print(f"  {cat:12s} {c['total']:>2d} images | detected {c['detected']:>2d} | silent_miss {c['silent_miss']:>2d} | "
               f"flagged {c['flagged']:>2d} | false_pos {c['false_positive']:>2d} | correct_neg {c['correct_negative']:>2d}")
+
+    if a.compare:
+        print("\n" + "=" * 70)
+        print(comp_report.to_markdown())
+        print("=" * 70)
+
     print(f"\nreport: {out / 'robustness_report.md'}   csv: {out / 'robustness_images.csv'}")
+    print(f"condition comparison: {out / 'condition_comparison.md'}   json: {out / 'condition_comparison.json'}")
     return 0
 
 

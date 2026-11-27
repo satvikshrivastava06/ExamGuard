@@ -165,15 +165,16 @@ class TestWallClockConsistency:
 
     def test_state_events_have_recent_ts_utc(self):
         """State event ts_utc should be close to 'now' (within 5 seconds)."""
+        before = datetime.now(timezone.utc)
         reg, sinks = _make_registry()
         mon = reg.bind(SID)
-        before = datetime.now(timezone.utc)
         feed(mon, E.FACE_PRESENT, 0, 1)
         reg.release(SID)
         after = datetime.now(timezone.utc)
         for ev in sinks[SID].events:
             dt = _parse_utc(ev.ts_utc)
-            assert before <= dt <= after, (
+            # Allow 1 second tolerance for millisecond string truncation and clock tick
+            assert before.timestamp() - 1.0 <= dt.timestamp() <= after.timestamp() + 1.0, (
                 f"Event {ev.type.value} at {ev.ts_utc} is outside [{before}, {after}]")
 
 

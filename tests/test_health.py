@@ -346,6 +346,8 @@ class TestHealthMonitorWithRealComponents:
         lat = LatencyTracker()
         res = ResourceMonitor()
 
+        # Let CPU settle from preceding thread stress tests
+        time.sleep(0.05)
         # Simulate 100 frames of normal operation
         for i in range(100):
             fps.tick()

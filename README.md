@@ -61,10 +61,26 @@ Preview keys: q stops monitoring and quits (the old `m` detector switch was remo
 
 Docs: `docs/sprint3_explained.md`. `sample_images/robustness/` and `sample_videos/` are generated; do not commit them.
 
-## Recent Updates: Data Persistence & Health Monitoring
+## Recent Updates: Data Persistence, Summaries & Condition Comparison
 | Feature | Description | Where |
 |---|---|---|
-| **MySQL Integration** | Persistent storage for session metadata, debounced events, and raw per-frame detections. | `exam_monitor/database.py` |
+| **Structured Monitoring Summaries** | Export comprehensive session metrics, timing, ratios, and incident counts to JSON and CSV. | `exam_monitor/accuracy_report.py`, `accuracy_report.py` |
+| **Camera Availability & Coverage** | Precise measurement of camera stream uptime, permission denials, and active face detection coverage. | `exam_monitor/accuracy_report.py` |
+| **Condition Comparison** | Compare detection quality, silent miss rates, and composite quality across environmental/pose conditions and detectors. | `exam_monitor/condition_comparison.py`, `compare_conditions.py`, `evaluate_images.py` |
+| **Data Sufficiency Identification** | Identify sessions with insufficient monitoring data (short duration, outages, blind frames, crashes) with specific root-cause reasons. | `exam_monitor/data_sufficiency.py`, `accuracy_report.py` |
+| **MySQL Integration** | Persistent storage for session metadata, debounced events, and raw per-frame detections, with direct summary exports. | `exam_monitor/database.py` |
 | **Event Publishing** | A decoupled publish-subscribe system (`EventBus`) with asynchronous buffered delivery to prevent pipeline blocking. | `exam_monitor/event_publisher.py` |
 | **Health Monitoring** | Real-time diagnostics tracking FPS, latency, CPU, and component status (Healthy/Degraded/Unhealthy). | `exam_monitor/health.py` |
+| **Aggregated Intervals & Uncertainty** | Per-state aggregated detection intervals, uncertainty levels/indicators, and misconduct-guard verification. | `exam_monitor/uncertainty.py`, `exam_monitor/accuracy_report.py` |
+| **Error Simulation & Limitations** | Deterministic error injection (`SimulatedErrorDetector`) for score-input testing and documented detector limitations. | `exam_monitor/error_simulation.py`, `docs/detector_limitations.md` |
+
+### New Command Shortcuts
+| Goal | Command |
+|---|---|
+| Structured summary & sufficiency audit | `python accuracy_report.py --check-sufficiency` |
+| Export summaries to JSON & CSV | `python accuracy_report.py --json output/summaries.json --csv output/summaries.csv` |
+| List only insufficient monitoring sessions | `python accuracy_report.py --insufficient-only` |
+| Compare detection quality across conditions | `python compare_conditions.py --baseline control --markdown output/comparison.md` |
+| Compare multiple detectors across conditions | `python compare_conditions.py --detectors haar yunet` |
+
 

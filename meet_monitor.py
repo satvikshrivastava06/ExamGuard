@@ -38,6 +38,7 @@ from exam_monitor.config import Config
 from exam_monitor.detector import build_detector
 from exam_monitor.events import EventType, JsonlSink
 from exam_monitor.meet_capture import MeetCapture
+from exam_monitor.mysql_cli import add_mysql_args, start_mysql_sync
 from exam_monitor.session_binding import MonitoringRegistry, SessionBindingError
 from exam_monitor.metrics import FpsMeter, LatencyTracker, ResourceMonitor
 from exam_monitor.overlay import blank_frame, draw_detections, draw_hud
@@ -60,13 +61,23 @@ def main() -> int:
     ap.add_argument("--no-gui", action="store_true", help="No OpenCV preview window")
     ap.add_argument("--max-seconds", type=float, default=0, help="Stop after N seconds (0 = run until q)")
     ap.add_argument("--log-dir", default="logs")
+    add_mysql_args(ap)
     args = ap.parse_args()
 
     cfg = Config(process_every_n=max(1, args.every), process_width=args.process_width)
     log_path = Path(args.log_dir) / f"events_{args.session_id}.jsonl"
 
+    mysql_ctx = start_mysql_sync(args)
+    if mysql_ctx is not None:
+        print(f"mysql sync enabled: {args.mysql_host}:{args.mysql_port}/{args.mysql_database}")
+
     # Bind session first (same guard as preview.py)
-    registry = MonitoringRegistry(cfg, lambda sid: JsonlSink(Path(args.log_dir) / f"events_{sid}.jsonl"))
+    sink_factory = (
+        (lambda sid: mysql_ctx.make_sink(Path(args.log_dir) / f"events_{sid}.jsonl"))
+        if mysql_ctx is not None
+        else (lambda sid: JsonlSink(Path(args.log_dir) / f"events_{sid}.jsonl"))
+    )
+    registry = MonitoringRegistry(cfg, sink_factory)
     try:
         monitor = registry.bind(args.session_id)
     except SessionBindingError as exc:
@@ -103,6 +114,8 @@ def main() -> int:
                     lat.add("analyze_ms", (time.perf_counter() - t0) * 1e3)
                     for k, v in detector.last_timing.items():
                         lat.add(k, v)
+                    if mysql_ctx is not None and dets:
+                        mysql_ctx.detection_writer.enqueue(args.session_id, frame_id, tuple(dets))
                     monitor.observe(obs, now, frame_id, details)
                 shown = frame
                 draw_detections(shown, dets,
@@ -118,8 +131,10 @@ def main() -> int:
 
             if not args.no_gui:
                 a, p = lat.stats("analyze_ms"), lat.stats("process_ms")
+                max_conf = max((d.confidence for d in dets), default=0.0)
+                mysql_tag = "ON" if mysql_ctx is not None else "OFF"
                 draw_hud(shown, [
-                    f"FPS {fps.fps:5.1f} | detector={detector.name} | every {cfg.process_every_n} frames",
+                    f"FPS {fps.fps:5.1f} | detector={detector.name} | every {cfg.process_every_n} frames | conf={max_conf:.2f} mysql={mysql_tag}",
                     f"analyze p50 {a['p50']:.1f} / p95 {a['p95']:.1f} ms | loop p95 {p['p95']:.1f} ms",
                     f"session={args.session_id}  state={monitor.status().state or 'INIT'}  faces={len(dets)} "
                     f"cpu={resources.get('proc_cpu_pct', 0):.0f}%  rss={resources.get('rss_mb', 0):.0f}MB",
@@ -149,7 +164,12 @@ def main() -> int:
     print("final status:", json.dumps(final_status.to_dict()))
 
     # --- Accuracy report ---
-    if log_path.exists():
+    if mysql_ctx is not None:
+        report = mysql_ctx.finalize_session(args.session_id, log_path)
+        print(f"[mysql] Synced events, detections, and summary for session {args.session_id}")
+        if report is not None:
+            report.print()
+    elif log_path.exists():
         try:
             report = compute_accuracy(log_path)
             report.print()
